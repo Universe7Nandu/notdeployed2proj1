@@ -1,10 +1,9 @@
-streamlit==1.33.0
+streamlit==1.44.0
 pysqlite3-binary==0.5.2.post3
 nest_asyncio==1.6.0
 PyPDF2==3.0.1
 python-docx==0.8.11
 langchain==0.1.14
-langchain-huggingface==0.0.6
 langchain-community==0.0.29
 langchain-groq==0.1.0
 faiss-cpu==1.10.0
