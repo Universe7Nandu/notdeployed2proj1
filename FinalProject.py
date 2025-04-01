@@ -9,6 +9,7 @@ from docx import Document
 import nest_asyncio
 import time
 from datetime import datetime
+import traceback
 from streamlit_extras.colored_header import colored_header
 from streamlit_extras.add_vertical_space import add_vertical_space
 from streamlit_extras.card import card
@@ -121,6 +122,20 @@ st.markdown("""
         color: #fa8c16;
         border: 1px solid #ffd591;
     }
+    .error-box {
+        background-color: #fff2f0;
+        border: 1px solid #ffccc7;
+        border-radius: 0.5rem;
+        padding: 1rem;
+        margin-bottom: 1rem;
+    }
+    .warning-box {
+        background-color: #fffbe6;
+        border: 1px solid #ffe58f;
+        border-radius: 0.5rem;
+        padding: 1rem;
+        margin-bottom: 1rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -155,14 +170,22 @@ if "chunk_overlap" not in st.session_state:
     st.session_state.chunk_overlap = 200
 if "api_key_entered" not in st.session_state:
     st.session_state.api_key_entered = False
+if "embedding_model_loaded" not in st.session_state:
+    st.session_state.embedding_model_loaded = False
+if "error_log" not in st.session_state:
+    st.session_state.error_log = []
 
 # Cache the embedding model to avoid reloading
 @st.cache_resource(show_spinner=False)
 def get_embedding_model():
     try:
-        return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        st.session_state.embedding_model_loaded = True
+        return model
     except Exception as e:
-        st.error(f"Error loading embedding model: {e}")
+        error_msg = f"Error loading embedding model: {str(e)}"
+        st.session_state.error_log.append(error_msg)
+        st.error(error_msg)
         return None
 
 # Create or get the vector store
@@ -188,7 +211,10 @@ def create_document_vectorstore(file, text_chunks):
             st.session_state.metrics["chunks_retrieved"] = len(text_chunks)
             return vectorstore
     except Exception as e:
-        st.error(f"Error creating vector store: {e}")
+        error_msg = f"Error creating vector store: {str(e)}"
+        st.session_state.error_log.append(error_msg)
+        st.error(error_msg)
+        st.error(traceback.format_exc())
         return None
 
 # Initialize knowledge base with default information
@@ -215,6 +241,7 @@ def initialize_knowledge_base():
             st.session_state.embedding_model = get_embedding_model()
             
         if st.session_state.embedding_model is None:
+            st.warning("Unable to load default knowledge base. Some features may be limited.")
             return None
             
         vectorstore = FAISS.from_texts(
@@ -223,40 +250,79 @@ def initialize_knowledge_base():
         )
         return vectorstore
     except Exception as e:
-        st.error(f"Error initializing knowledge base: {e}")
+        error_msg = f"Error initializing knowledge base: {str(e)}"
+        st.session_state.error_log.append(error_msg)
+        st.error(error_msg)
+        st.error(traceback.format_exc())
         return None
 
 # Process uploaded document
 def get_document_text(uploaded_file):
     text = ""
     file_name = uploaded_file.name
+    tmp_path = None
+    
     try:
         if file_name.endswith(".pdf"):
-            pdf_reader = PdfReader(uploaded_file)
-            for page in pdf_reader.pages:
-                page_text = page.extract_text() or ""
-                text += page_text + "\n\n"
+            try:
+                pdf_reader = PdfReader(uploaded_file)
+                for page in pdf_reader.pages:
+                    page_text = page.extract_text() or ""
+                    text += page_text + "\n\n"
+            except Exception as e:
+                error_msg = f"Error reading PDF file: {str(e)}"
+                st.session_state.error_log.append(error_msg)
+                st.error(error_msg)
+                return None
+                
         elif file_name.endswith(".docx"):
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp:
-                tmp.write(uploaded_file.getvalue())
-                tmp_path = tmp.name
+            try:
+                # Create a temporary file path
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp:
+                    tmp.write(uploaded_file.getvalue())
+                    tmp_path = tmp.name
                 
-            doc = Document(tmp_path)
-            for para in doc.paragraphs:
-                text += para.text + "\n"
+                # Read the document
+                doc = Document(tmp_path)
+                for para in doc.paragraphs:
+                    text += para.text + "\n"
+            except Exception as e:
+                error_msg = f"Error reading DOCX file: {str(e)}"
+                st.session_state.error_log.append(error_msg)
+                st.error(error_msg)
+                return None
+            finally:
+                # Clean up temporary file
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except Exception as e:
+                        st.warning(f"Could not remove temporary file: {str(e)}")
                 
-            # Clean up temp file
-            os.unlink(tmp_path)
         elif file_name.endswith(".txt"):
-            text = uploaded_file.getvalue().decode("utf-8")
+            try:
+                text = uploaded_file.getvalue().decode("utf-8")
+            except Exception as e:
+                error_msg = f"Error reading TXT file: {str(e)}"
+                st.session_state.error_log.append(error_msg)
+                st.error(error_msg)
+                return None
         else:
             st.error("Unsupported file format. Please upload a PDF, DOCX, or TXT file.")
             return None
     except Exception as e:
-        st.error(f"Error processing document: {e}")
+        error_msg = f"Error processing document: {str(e)}"
+        st.session_state.error_log.append(error_msg)
+        st.error(error_msg)
+        st.error(traceback.format_exc())
         return None
     
-    return text if text.strip() else None
+    # Check if we got any text
+    if not text.strip():
+        st.warning("No text could be extracted from the document.")
+        return None
+        
+    return text
 
 # Split text into chunks
 def split_text(text):
@@ -273,9 +339,17 @@ def split_text(text):
                 chunk_overlap=st.session_state.chunk_overlap,
                 length_function=len
             )
-        return text_splitter.split_text(text)
+        chunks = text_splitter.split_text(text)
+        
+        if not chunks:
+            st.warning("Text splitting resulted in 0 chunks. The document might be too short or empty.")
+            
+        return chunks
     except Exception as e:
-        st.error(f"Error splitting text: {e}")
+        error_msg = f"Error splitting text: {str(e)}"
+        st.session_state.error_log.append(error_msg)
+        st.error(error_msg)
+        st.error(traceback.format_exc())
         return []
 
 # Generate response using LLM
@@ -354,7 +428,10 @@ def generate_response(user_question):
         return answer
     
     except Exception as e:
-        st.error(f"Error generating response: {e}")
+        error_msg = f"Error generating response: {str(e)}"
+        st.session_state.error_log.append(error_msg)
+        st.error(error_msg)
+        st.error(traceback.format_exc())
         return f"I encountered an error while generating a response. Error details: {str(e)}"
 
 # Custom message display
@@ -403,19 +480,23 @@ def main():
             help="The document will be processed and made available for questions"
         )
         
-        if uploaded_file and uploaded_file != st.session_state.uploaded_file:
+        if uploaded_file and (uploaded_file != st.session_state.uploaded_file or st.button("Process Document")):
             st.session_state.uploaded_file = uploaded_file
             with st.spinner("Processing document..."):
                 document_text = get_document_text(uploaded_file)
                 if document_text:
                     text_chunks = split_text(document_text)
                     if text_chunks:
-                        st.session_state.vector_store = create_document_vectorstore(
+                        vectorstore = create_document_vectorstore(
                             uploaded_file,
                             text_chunks
                         )
-                        st.session_state.document_mode = True
-                        st.success(f"✅ Document processed: {len(text_chunks)} chunks created")
+                        if vectorstore:
+                            st.session_state.vector_store = vectorstore
+                            st.session_state.document_mode = True
+                            st.success(f"✅ Document processed: {len(text_chunks)} chunks created")
+                        else:
+                            st.error("Failed to create vector store from document")
                     else:
                         st.error("Failed to extract text chunks from the document.")
                 else:
@@ -471,15 +552,29 @@ def main():
                     if document_text:
                         text_chunks = split_text(document_text)
                         if text_chunks:
-                            st.session_state.vector_store = create_document_vectorstore(
+                            vectorstore = create_document_vectorstore(
                                 st.session_state.uploaded_file,
                                 text_chunks
                             )
-                            st.success(f"✅ Document reprocessed: {len(text_chunks)} chunks created")
+                            if vectorstore:
+                                st.session_state.vector_store = vectorstore
+                                st.success(f"✅ Document reprocessed: {len(text_chunks)} chunks created")
+                            else:
+                                st.error("Failed to create vector store during reprocessing")
                         else:
                             st.error("Failed to extract text chunks during reprocessing.")
                     else:
                         st.error("Failed to extract text during reprocessing.")
+            
+            # Error log viewer
+            if st.session_state.error_log and st.button("View Error Log"):
+                st.write("Error Log:")
+                for i, error in enumerate(st.session_state.error_log):
+                    st.markdown(f"**Error {i+1}:** {error}")
+                    
+            if st.session_state.error_log and st.button("Clear Error Log"):
+                st.session_state.error_log = []
+                st.success("Error log cleared")
         
         add_vertical_space(1)
         
@@ -514,7 +609,7 @@ def main():
         color_name="blue-70"
     )
     
-    # Show current mode
+    # Show current mode and embedding model status
     col1, col2 = st.columns([3, 1])
     
     with col1:
@@ -532,6 +627,28 @@ def main():
                 <span style="margin-left: 10px;">Using: Default Knowledge Base</span>
             </div>
             """, unsafe_allow_html=True)
+    
+    # Show embedding model status
+    with col2:
+        if st.session_state.embedding_model_loaded:
+            st.markdown("""
+            <div style="display: flex; align-items: center; margin-bottom: 1rem;">
+                <div class="status-chip active">Embedding Model: Loaded</div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div style="display: flex; align-items: center; margin-bottom: 1rem;">
+                <div class="status-chip inactive">Embedding Model: Not Loaded</div>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("Initialize Embedding Model"):
+                with st.spinner("Loading embedding model..."):
+                    st.session_state.embedding_model = get_embedding_model()
+                    if st.session_state.embedding_model:
+                        st.success("Embedding model loaded successfully")
+                    else:
+                        st.error("Failed to load embedding model")
     
     # Metrics display
     with st.expander("📊 Performance Metrics", expanded=False):
@@ -572,4 +689,8 @@ def main():
         display_message(response, is_user=False)
 
 if __name__ == "__main__":
-    main() 
+    try:
+        main()
+    except Exception as e:
+        st.error(f"Application error: {str(e)}")
+        st.error(traceback.format_exc()) 
