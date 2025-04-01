@@ -17,6 +17,9 @@ from streamlit_extras.card import card
 __import__('pysqlite3')
 sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 
+# Apply nest_asyncio to resolve async issues
+nest_asyncio.apply()
+
 # Import LangChain modules after SQLite fix
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.embeddings import HuggingFaceEmbeddings
@@ -27,7 +30,7 @@ from langchain_groq import ChatGroq
 
 # Load environment variables
 load_dotenv()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 # Page configuration and styling
 st.set_page_config(
@@ -132,6 +135,8 @@ if "vector_store" not in st.session_state:
     st.session_state.vector_store = None
 if "embedding_model" not in st.session_state:
     st.session_state.embedding_model = None
+if "knowledge_base" not in st.session_state:
+    st.session_state.knowledge_base = None
 if "uploaded_file" not in st.session_state:
     st.session_state.uploaded_file = None
 if "metrics" not in st.session_state:
@@ -148,11 +153,17 @@ if "chunk_size" not in st.session_state:
     st.session_state.chunk_size = 1000
 if "chunk_overlap" not in st.session_state:
     st.session_state.chunk_overlap = 200
+if "api_key_entered" not in st.session_state:
+    st.session_state.api_key_entered = False
 
 # Cache the embedding model to avoid reloading
 @st.cache_resource(show_spinner=False)
 def get_embedding_model():
-    return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    try:
+        return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    except Exception as e:
+        st.error(f"Error loading embedding model: {e}")
+        return None
 
 # Create or get the vector store
 def create_document_vectorstore(file, text_chunks):
@@ -161,6 +172,10 @@ def create_document_vectorstore(file, text_chunks):
         if st.session_state.embedding_model is None:
             with st.spinner("Loading embedding model..."):
                 st.session_state.embedding_model = get_embedding_model()
+                
+        if st.session_state.embedding_model is None:
+            st.error("Failed to load embedding model. Please try again.")
+            return None
         
         # Create FAISS vector store
         with st.spinner("Processing document..."):
@@ -198,6 +213,9 @@ def initialize_knowledge_base():
     try:
         if st.session_state.embedding_model is None:
             st.session_state.embedding_model = get_embedding_model()
+            
+        if st.session_state.embedding_model is None:
+            return None
             
         vectorstore = FAISS.from_texts(
             texts=chunks,
@@ -265,12 +283,15 @@ def generate_response(user_question):
     start_time = time.time()
     
     try:
+        if not GROQ_API_KEY and not st.session_state.api_key_entered:
+            return "Please enter your Groq API key in the sidebar to continue."
+            
         if st.session_state.document_mode and st.session_state.vector_store:
             # Use document-based knowledge
             vectorstore = st.session_state.vector_store
         else:
             # Use default knowledge base
-            if not hasattr(st.session_state, 'knowledge_base') or st.session_state.knowledge_base is None:
+            if st.session_state.knowledge_base is None:
                 st.session_state.knowledge_base = initialize_knowledge_base()
             vectorstore = st.session_state.knowledge_base
         
@@ -282,10 +303,6 @@ def generate_response(user_question):
             memory_key="chat_history",
             return_messages=True
         )
-        
-        # Check if GROQ_API_KEY is set
-        if not GROQ_API_KEY or GROQ_API_KEY == "your_groq_api_key_here":
-            return "Please set your GROQ_API_KEY in the .env file to continue."
         
         # Define prompt template that guides the model to cite sources
         prompt_template = """
@@ -304,9 +321,12 @@ def generate_response(user_question):
         Question: {question}
         """
         
+        # Use the API key from session state if available
+        api_key = st.session_state.get("groq_api_key", GROQ_API_KEY)
+        
         llm = ChatGroq(
             temperature=0.5,
-            groq_api_key=GROQ_API_KEY,
+            groq_api_key=api_key,
             model_name="mixtral-8x7b-32768"
         )
         
@@ -350,9 +370,6 @@ def display_message(message, is_user=False):
 
 # Main application
 def main():
-    # Apply nest_asyncio to resolve async issues
-    nest_asyncio.apply()
-    
     # Sidebar for settings and document upload
     with st.sidebar:
         colored_header(
@@ -362,6 +379,21 @@ def main():
         )
         
         add_vertical_space(2)
+        
+        # API Key input
+        st.subheader("🔑 API Key")
+        groq_api_key = st.text_input(
+            "Enter your Groq API Key",
+            type="password",
+            value=GROQ_API_KEY if GROQ_API_KEY else "",
+            help="Required to use the Groq language model"
+        )
+        
+        if groq_api_key:
+            st.session_state.groq_api_key = groq_api_key
+            st.session_state.api_key_entered = True
+        
+        add_vertical_space(1)
         
         # Document upload section
         st.subheader("📄 Document Upload")
