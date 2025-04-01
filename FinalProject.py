@@ -10,9 +10,6 @@ import nest_asyncio
 import time
 from datetime import datetime
 import traceback
-from streamlit_extras.colored_header import colored_header
-from streamlit_extras.add_vertical_space import add_vertical_space
-from streamlit_extras.card import card
 
 # Force use of newer SQLite
 __import__('pysqlite3')
@@ -136,6 +133,26 @@ st.markdown("""
         padding: 1rem;
         margin-bottom: 1rem;
     }
+    .header-container {
+        padding: 1rem 0;
+        margin-bottom: 2rem;
+        background-color: #1890ff;
+        color: white;
+        border-radius: 0.5rem;
+        text-align: center;
+    }
+    .header-title {
+        font-size: 1.5rem;
+        font-weight: bold;
+        margin-bottom: 0.5rem;
+    }
+    .header-description {
+        font-size: 1rem;
+        opacity: 0.9;
+    }
+    .vertical-spacer {
+        height: 1rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -174,6 +191,20 @@ if "embedding_model_loaded" not in st.session_state:
     st.session_state.embedding_model_loaded = False
 if "error_log" not in st.session_state:
     st.session_state.error_log = []
+
+# Custom header function to replace streamlit-extras colored_header
+def custom_header(label, description=None, color="#1890ff"):
+    st.markdown(f"""
+    <div class="header-container" style="background-color: {color};">
+        <div class="header-title">{label}</div>
+        {f'<div class="header-description">{description}</div>' if description else ''}
+    </div>
+    """, unsafe_allow_html=True)
+
+# Custom function to add vertical space
+def add_vertical_space(num_lines=1):
+    for _ in range(num_lines):
+        st.markdown('<div class="vertical-spacer"></div>', unsafe_allow_html=True)
 
 # Cache the embedding model to avoid reloading
 @st.cache_resource(show_spinner=False)
@@ -449,11 +480,7 @@ def display_message(message, is_user=False):
 def main():
     # Sidebar for settings and document upload
     with st.sidebar:
-        colored_header(
-            label="RAG AI Assistant",
-            description="Powered by Groq & LangChain",
-            color_name="blue-70"
-        )
+        custom_header("RAG AI Assistant", "Powered by Groq & LangChain")
         
         add_vertical_space(2)
         
@@ -603,11 +630,7 @@ def main():
             st.success("Conversation cleared!")
     
     # Main content area
-    colored_header(
-        label="RAG-Powered AI Assistant",
-        description="Chat with documents using Retrieval Augmented Generation",
-        color_name="blue-70"
-    )
+    custom_header("RAG-Powered AI Assistant", "Chat with documents using Retrieval Augmented Generation")
     
     # Show current mode and embedding model status
     col1, col2 = st.columns([3, 1])
